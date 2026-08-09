@@ -185,8 +185,9 @@ async function carregarRobo() {
     );
 
     // escalinha
-    const fator = Math.max(bbox.tamanho.y / 12, 0.5);
-    robo.scaling.setAll(fator);
+  // escalinha — reduzida
+const fator = Math.max(bbox.tamanho.y / 3 * 0.4, 0.2);
+robo.scaling.setAll(fator);
 
     // sombra
     const shadowGenerator = new ShadowGenerator(2048, dir);
