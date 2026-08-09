@@ -1,7 +1,7 @@
 import { defineConfig } from "vite";
 
 export default defineConfig({
-  base: "./assistente/",
+  base: "./assistente/",  
   server: {
     host: true,
     port: 5173
