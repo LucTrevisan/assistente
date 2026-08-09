@@ -186,9 +186,8 @@ async function carregarRobo() {
 
     // escalinha
   // escalinha — reduzida
-const fator = Math.max(bbox.tamanho.y / 3 * 0.4, 0.2);
+const fator = 0.02;
 robo.scaling.setAll(fator);
-
     // sombra
     const shadowGenerator = new ShadowGenerator(2048, dir);
     result.meshes.forEach(m => {
