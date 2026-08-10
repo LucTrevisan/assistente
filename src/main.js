@@ -831,6 +831,14 @@ function iniciarEscutaContinua() {
 
   reconhecimentoVoz.onresult = (event) => {
     const pergunta = event.results[0][0].transcript;
+
+    // proteção contra eco: se o microfone captou a própria voz do
+    // robô saindo pela caixa de som, ignora (evita loop de repetição)
+    if (ehEcoDaPropriaFala(pergunta)) {
+      console.log("🔇 Ignorado (parece eco da própria fala do robô):", pergunta);
+      return;
+    }
+
     console.log("📢 Pergunta:", pergunta);
     perguntarAssistente(pergunta);
   };
@@ -891,11 +899,43 @@ function reiniciarEscuta() {
   // no iOS/Safari, a escuta só pode começar por toque direto do
   // usuário — não tenta reiniciar sozinho, o botão manual cuida disso
   if (isIOSouSafari && botaoEscutaManual) return;
+  // nunca escuta enquanto o robô ainda está falando — evita o
+  // microfone captar a própria voz dele (causa de loop/eco)
+  if (window.speechSynthesis && window.speechSynthesis.speaking) {
+    setTimeout(reiniciarEscuta, 500);
+    return;
+  }
   try {
     reconhecimentoVoz.start();
   } catch (err) {
     console.warn("Não conseguiu reiniciar a escuta:", err.message);
   }
+}
+
+// compara a pergunta transcrita com o que o robô acabou de falar —
+// se forem muito parecidas e a fala tiver terminado há pouco tempo,
+// é provável que seja o microfone captando o próprio alto-falante
+let ultimaFalaTexto = "";
+let ultimaFalaTimestamp = 0;
+function ehEcoDaPropriaFala(textoTranscrito) {
+  if (!ultimaFalaTexto) return false;
+  const segundosDesdeAFala = (Date.now() - ultimaFalaTimestamp) / 1000;
+  if (segundosDesdeAFala > 8) return false; // já faz tempo, não é eco
+
+  const normalizar = (t) =>
+    t
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^\w\s]/g, "")
+      .trim();
+
+  const a = normalizar(textoTranscrito);
+  const b = normalizar(ultimaFalaTexto);
+  if (!a) return true; // transcrição vazia/ruído, ignora
+
+  // se um "contém" boa parte do outro, trata como eco
+  return b.includes(a) || a.includes(b.slice(0, Math.min(30, b.length)));
 }
 
 // envia a pergunta pro proxy (Cloudflare Worker) e faz o robô
@@ -981,8 +1021,16 @@ function falarResposta(texto) {
   fala.rate = 0.95;
   if (vozEscolhida) fala.voice = vozEscolhida;
 
-  fala.onend = () => setTimeout(reiniciarEscuta, 1000);
-  fala.onerror = () => setTimeout(reiniciarEscuta, 1000);
+  // guarda o que está sendo falado, pra detectar eco quando a
+  // escuta reiniciar (ver ehEcoDaPropriaFala)
+  ultimaFalaTexto = textoLimpo;
+  ultimaFalaTimestamp = Date.now();
+
+  fala.onend = () => {
+    ultimaFalaTimestamp = Date.now(); // marca o fim real da fala
+    setTimeout(reiniciarEscuta, 1200);
+  };
+  fala.onerror = () => setTimeout(reiniciarEscuta, 1200);
 
   window.speechSynthesis.cancel();
   window.speechSynthesis.speak(fala);
