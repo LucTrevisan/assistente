@@ -21,7 +21,16 @@ import {
   Texture,
   PBRMaterial,
   DefaultRenderingPipeline,
-  SSAO2RenderingPipeline
+  SSAO2RenderingPipeline,
+  SceneOptimizer,
+  SceneOptimizerOptions,
+  HardwareScalingOptimization,
+  ShadowsOptimization,
+  PostProcessesOptimization,
+  RenderTargetsOptimization,
+  LensFlaresOptimization,
+  ParticlesOptimization,
+  TextureOptimization
 } from "@babylonjs/core";
 import "@babylonjs/loaders/glTF";
 import {
@@ -159,6 +168,58 @@ window.desligarSSAO = () => { if (ssaoPipeline) ssaoPipeline.isEnabled = false; 
 window.ligarSSAO = () => { if (ssaoPipeline) ssaoPipeline.isEnabled = true; console.log("SSAO ligado."); };
 
 // =========================================================
+// PERFORMANCE ADAPTATIVA — detecta dispositivos mais fracos
+// (celular, tablet, notebooks básicos) e já entrega uma
+// qualidade mais leve de cara, sem esperar travar pra reagir.
+// Depois disso, um watchdog de FPS continua ajustando em tempo
+// real caso o desempenho caia durante o uso.
+// =========================================================
+const nucleos = navigator.hardwareConcurrency || 4;
+const memoriaGB = navigator.deviceMemory || 4; // só existe no Chrome/Edge
+const ehMovel = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+const dispositivoFraco = ehMovel || nucleos <= 4 || memoriaGB <= 4;
+
+if (dispositivoFraco) {
+  console.log("⚙️ Dispositivo mais limitado detectado — ajustando qualidade automaticamente.");
+  engine.setHardwareScalingLevel(1.3); // renderiza em resolução um pouco menor, reescala pra tela
+  shadowGenerator.getShadowMap().resize(512); // sombra mais leve (era 1024)
+  if (ssaoPipeline) {
+    ssaoPipeline.samples = 4; // era 8
+    ssaoPipeline.expensiveBlur = false;
+  }
+  if (defaultPipeline) {
+    defaultPipeline.bloomEnabled = false;
+    defaultPipeline.samples = 1;
+  }
+}
+
+// desliga picking de mouse-move (só precisa saber onde clicou, não
+// onde passou o mouse) — reduz processamento por frame sem afetar
+// nada visível
+scene.skipPointerMovePicking = true;
+
+// watchdog: se o FPS ficar consistentemente baixo depois de
+// carregado, desliga SSAO/bloom sozinho (dá pra reativar no console
+// com ligarSSAO() se quiser testar de novo)
+let amostrasFpsBaixo = 0;
+let qualidadeReduzidaAutomaticamente = false;
+scene.onAfterRenderObservable.add(() => {
+  if (qualidadeReduzidaAutomaticamente) return;
+  if (engine.getFps() < 25) {
+    amostrasFpsBaixo++;
+  } else {
+    amostrasFpsBaixo = 0;
+  }
+  // ~3 segundos consecutivos abaixo de 25fps -> reduz qualidade
+  if (amostrasFpsBaixo > 180) {
+    qualidadeReduzidaAutomaticamente = true;
+    console.log("⚠️ FPS baixo detectado — reduzindo qualidade automaticamente.");
+    ativarRenderizacaoRealista(false);
+    shadowGenerator.getShadowMap().resize(256);
+  }
+});
+
+// =========================================================
 // ESTADO GLOBAL
 // =========================================================
 let containerMaquina = null;
@@ -261,6 +322,12 @@ async function carregarModelo() {
     aplicarAcabamentoPolido(partes);
     criarPlacaRomiD800(bbox);
     adicionarAssistenteIA(bbox); // não bloqueia o carregamento se falhar
+
+    // os materiais não mudam depois de aplicados — congelar evita
+    // que o Babylon recalcule o estado do shader a cada frame
+    partes.forEach((mesh) => {
+      if (mesh.material) mesh.material.freeze();
+    });
 
     dadosExplosao = prepararExplosao(partes);
     prepararModoLivre();
@@ -1297,3 +1364,36 @@ engine.runRenderLoop(() => {
 window.addEventListener("resize", () => {
   engine.resize();
 });
+
+// =========================================================
+// OTIMIZAÇÃO AUTOMÁTICA DE PERFORMANCE
+// =========================================================
+// Monitora o FPS e reduz qualidade SÓ nos dispositivos que
+// precisam (ordem: resolução de renderização -> sombras ->
+// pós-processamento -> texturas/partículas). Em aparelhos
+// rápidos (desktop, Quest 3) roda tudo no talo, sem mudar nada.
+// Se o FPS melhorar depois (ex.: fechou outra aba), ele tenta
+// restaurar a qualidade automaticamente.
+function iniciarOtimizacaoAutomatica() {
+  const fpsAlvo = 50; // abaixo disso, começa a degradar qualidade
+  const opcoes = new SceneOptimizerOptions(fpsAlvo, 1500); // reavalia a cada 1,5s
+
+  opcoes.addOptimization(new HardwareScalingOptimization(0, 1.5)); // renderiza em resolução menor
+  opcoes.addOptimization(new ShadowsOptimization(1));
+  opcoes.addOptimization(new PostProcessesOptimization(2)); // desliga SSAO/bloom se precisar
+  opcoes.addOptimization(new RenderTargetsOptimization(2));
+  opcoes.addOptimization(new LensFlaresOptimization(3));
+  opcoes.addOptimization(new ParticlesOptimization(3));
+  opcoes.addOptimization(new TextureOptimization(3, 512)); // reduz textura como último recurso
+
+  const otimizador = SceneOptimizer.OptimizeAsync(scene, opcoes, () => {
+    console.log("%c✅ Cena otimizada para o desempenho deste dispositivo.", "color:#4fd1c5");
+  });
+
+  window.otimizadorPerformance = otimizador; // debug: otimizadorPerformance.stop() pra desativar
+}
+
+// espera a máquina + robô terminarem de carregar antes de medir FPS
+// (durante o carregamento o FPS é naturalmente baixo, e isso
+// enviesaria a otimização pra baixo sem necessidade)
+setTimeout(iniciarOtimizacaoAutomatica, 4000);
