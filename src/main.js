@@ -880,35 +880,23 @@ function falarResposta(texto) {
     console.warn("Speech Synthesis não suportado.");
     return;
   }
-  const fala = new SpeechSynthesisUtterance(texto);
+
+  // remove emojis e símbolos que o TTS tenta "ler" em voz alta
+  // (ex.: 🤖 seria lido como "robô", ícones diversos como nome do caractere)
+  const textoLimpo = texto
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const fala = new SpeechSynthesisUtterance(textoLimpo);
   fala.lang = CONFIG.idiomaVoz;
   fala.rate = 0.95;
 
-  fala.onstart = () => animarBocaRobo(true);
-  fala.onend = () => {
-    animarBocaRobo(false);
-    setTimeout(reiniciarEscuta, 1000);
-  };
-  fala.onerror = () => {
-    animarBocaRobo(false);
-    setTimeout(reiniciarEscuta, 1000);
-  };
+  fala.onend = () => setTimeout(reiniciarEscuta, 1000);
+  fala.onerror = () => setTimeout(reiniciarEscuta, 1000);
 
   window.speechSynthesis.cancel();
   window.speechSynthesis.speak(fala);
-}
-
-let intervaloBoca;
-function animarBocaRobo(falando) {
-  if (!meshBocaRobo) return;
-  clearInterval(intervaloBoca);
-  if (falando) {
-    intervaloBoca = setInterval(() => {
-      meshBocaRobo.scaling.y = meshBocaRobo.scaling.y > 1.1 ? 1.0 : 1.25;
-    }, 180);
-  } else {
-    meshBocaRobo.scaling.y = 1.0;
-  }
 }
 
 function prepararExplosao(listaPartes) {
