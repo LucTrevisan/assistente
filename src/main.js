@@ -58,7 +58,10 @@ const CONFIG = {
     "BASE_AXIS, X_AXIS, Y_AXIS, Z_AXIS, SPINDLE (eixo-árvore), TOOLMAGAZINE (magazine de ferramentas), " +
     "POCKET_TC, TOOL_CHANGER (trocador de ferramentas), CONVEYOR (esteira de cavacos), ENCLOSURE (carenagem), " +
     "DOOR_LEFT, DOOR_RIGHT. Responda de forma curta e didática (máximo 3-4 frases), " +
-    "pensando em alunos técnicos iniciantes. Priorize segurança operacional quando relevante.",
+    "pensando em alunos técnicos iniciantes. Priorize segurança operacional quando relevante. " +
+    "IMPORTANTE: sua resposta será lida em voz alta por um sintetizador de voz, então escreva em " +
+    "texto corrido, SEM markdown — nada de **negrito**, listas com asteriscos ou traços, títulos com #, " +
+    "ou qualquer símbolo de formatação. Só texto puro, como se estivesse falando naturalmente.",
   // modelo 3D do robô assistente (fica em public/models/)
   modelRobo: "biped_robot.glb",
   idiomaVoz: "pt-BR"
@@ -960,10 +963,16 @@ function falarResposta(texto) {
     return;
   }
 
-  // remove emojis e símbolos que o TTS tenta "ler" em voz alta
-  // (ex.: 🤖 seria lido como "robô", ícones diversos como nome do caractere)
+  // remove emojis, markdown e outros símbolos que o TTS tenta
+  // "ler" em voz alta (ex.: ** seria lido como "asterisco asterisco")
   const textoLimpo = texto
     .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}]/gu, "")
+    .replace(/\*\*(.+?)\*\*/g, "$1") // **negrito** -> negrito
+    .replace(/\*(.+?)\*/g, "$1") // *itálico* -> itálico
+    .replace(/^#{1,6}\s+/gm, "") // # Título -> Título
+    .replace(/^[-*]\s+/gm, "") // - item / * item -> item
+    .replace(/`([^`]+)`/g, "$1") // `código` -> código
+    .replace(/[*_#`~]/g, "") // qualquer símbolo de markdown restante
     .replace(/\s+/g, " ")
     .trim();
 
