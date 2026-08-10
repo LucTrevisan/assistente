@@ -797,6 +797,16 @@ async function adicionarAssistenteIA(bbox) {
   }
 }
 
+// iOS/Safari exige um toque do usuário pra iniciar a escuta —
+// não deixa reiniciar sozinho via JavaScript como nos outros
+// navegadores. Detecta esse caso pra usar um botão de fallback.
+const isIOSouSafari =
+  /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1) ||
+  (/^((?!chrome|android).)*safari/i.test(navigator.userAgent) && !/crios|fxios/i.test(navigator.userAgent));
+
+let botaoEscutaManual;
+
 function iniciarEscutaContinua() {
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SpeechRecognition) {
@@ -813,6 +823,7 @@ function iniciarEscutaContinua() {
   reconhecimentoVoz.onstart = () => {
     escutandoVoz = true;
     console.log("🎤 Ouvindo...");
+    if (botaoEscutaManual) botaoEscutaManual.textContent = "🎤 Ouvindo...";
   };
 
   reconhecimentoVoz.onresult = (event) => {
@@ -824,18 +835,59 @@ function iniciarEscutaContinua() {
   reconhecimentoVoz.onerror = (event) => {
     console.warn("Erro de voz:", event.error);
     escutandoVoz = false;
+    if (botaoEscutaManual) botaoEscutaManual.textContent = "🎤 Toque para perguntar";
   };
 
   reconhecimentoVoz.onend = () => {
     escutandoVoz = false;
-    setTimeout(reiniciarEscuta, 1500);
+    if (botaoEscutaManual) {
+      botaoEscutaManual.textContent = "🎤 Toque para perguntar";
+    } else {
+      setTimeout(reiniciarEscuta, 1500);
+    }
   };
 
-  reiniciarEscuta();
+  if (isIOSouSafari) {
+    console.log("📱 iOS/Safari detectado — usando botão de toque em vez de escuta automática.");
+    criarBotaoEscutaManual();
+  } else {
+    reiniciarEscuta();
+  }
+}
+
+// fallback pra iOS/Safari: cria um botão HTML fixo na tela que o
+// aluno precisa tocar antes de cada pergunta (exigência do Safari
+// pra liberar acesso ao microfone/fala via gesto do usuário)
+function criarBotaoEscutaManual() {
+  botaoEscutaManual = document.createElement("button");
+  botaoEscutaManual.textContent = "🎤 Toque para perguntar";
+  botaoEscutaManual.style.cssText = `
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1000;
+    padding: 14px 24px;
+    font-size: 16px;
+    font-weight: bold;
+    color: #12161c;
+    background: #4fd1c5;
+    border: none;
+    border-radius: 30px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    cursor: pointer;
+  `;
+  botaoEscutaManual.addEventListener("click", () => {
+    if (!escutandoVoz) reiniciarEscuta();
+  });
+  document.body.appendChild(botaoEscutaManual);
 }
 
 function reiniciarEscuta() {
   if (!reconhecimentoVoz || escutandoVoz) return;
+  // no iOS/Safari, a escuta só pode começar por toque direto do
+  // usuário — não tenta reiniciar sozinho, o botão manual cuida disso
+  if (isIOSouSafari && botaoEscutaManual) return;
   try {
     reconhecimentoVoz.start();
   } catch (err) {
@@ -875,6 +927,33 @@ async function perguntarAssistente(pergunta) {
   }
 }
 
+// tenta achar uma voz masculina em português; se não achar, usa
+// a primeira voz em português disponível; se nem isso, usa o padrão
+// do navegador (nunca trava por falta de voz)
+let vozEscolhida = null;
+function escolherVoz() {
+  const vozes = window.speechSynthesis.getVoices();
+  if (!vozes.length) return null;
+
+  const vozesPt = vozes.filter((v) => v.lang && v.lang.toLowerCase().startsWith("pt"));
+  const candidatas = vozesPt.length ? vozesPt : vozes;
+
+  // nomes comuns de vozes masculinas em português nos navegadores/SOs mais usados
+  const nomesMasculinos = /daniel|ricardo|felipe|antonio|jorge|male|homem|masculin/i;
+  const masculina = candidatas.find((v) => nomesMasculinos.test(v.name));
+
+  return masculina || vozesPt[0] || vozes[0] || null;
+}
+
+// carrega a lista de vozes (em alguns navegadores isso é assíncrono)
+if ("speechSynthesis" in window) {
+  vozEscolhida = escolherVoz();
+  window.speechSynthesis.onvoiceschanged = () => {
+    vozEscolhida = escolherVoz();
+    if (vozEscolhida) console.log("🔊 Voz selecionada:", vozEscolhida.name, vozEscolhida.lang);
+  };
+}
+
 function falarResposta(texto) {
   if (!("speechSynthesis" in window)) {
     console.warn("Speech Synthesis não suportado.");
@@ -891,6 +970,7 @@ function falarResposta(texto) {
   const fala = new SpeechSynthesisUtterance(textoLimpo);
   fala.lang = CONFIG.idiomaVoz;
   fala.rate = 0.95;
+  if (vozEscolhida) fala.voice = vozEscolhida;
 
   fala.onend = () => setTimeout(reiniciarEscuta, 1000);
   fala.onerror = () => setTimeout(reiniciarEscuta, 1000);
