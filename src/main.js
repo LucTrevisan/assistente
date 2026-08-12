@@ -21,16 +21,7 @@ import {
   Texture,
   PBRMaterial,
   DefaultRenderingPipeline,
-  SSAO2RenderingPipeline,
-  SceneOptimizer,
-  SceneOptimizerOptions,
-  HardwareScalingOptimization,
-  ShadowsOptimization,
-  PostProcessesOptimization,
-  RenderTargetsOptimization,
-  LensFlaresOptimization,
-  ParticlesOptimization,
-  TextureOptimization
+  SSAO2RenderingPipeline
 } from "@babylonjs/core";
 import "@babylonjs/loaders/glTF";
 import {
@@ -1005,13 +996,18 @@ function ehEcoDaPropriaFala(textoTranscrito) {
   return b.includes(a) || a.includes(b.slice(0, Math.min(30, b.length)));
 }
 
-// envia a pergunta pro proxy (Cloudflare Worker) e faz o robô
-// falar a resposta em voz alta, animando a boca
+// envia a pergunta pro proxy (Cloudflare Worker). Se vier do cache,
+// fala tudo de uma vez (já é instantâneo). Se vier streaming da
+// Anthropic, fala cada frase assim que ela chega, sem esperar a
+// resposta inteira — reduz bastante a demora percebida.
 async function perguntarAssistente(pergunta) {
   if (!CONFIG.assistantProxyUrl || CONFIG.assistantProxyUrl.includes("SEU-WORKER")) {
     console.warn("⚠️ Proxy do assistente ainda não configurado (CONFIG.assistantProxyUrl).");
     return;
   }
+
+  window.speechSynthesis.cancel(); // limpa qualquer fala pendente da pergunta anterior
+  utterancesPendentes = 0; // cancel() nem sempre dispara onend/onerror dos cancelados
 
   try {
     const resp = await fetch(CONFIG.assistantProxyUrl, {
@@ -1024,16 +1020,65 @@ async function perguntarAssistente(pergunta) {
     });
 
     if (!resp.ok) throw new Error(`Proxy respondeu ${resp.status}`);
-    const data = await resp.json();
-    const textoResposta =
-      data?.content?.find((bloco) => bloco.type === "text")?.text ||
-      "Não consegui gerar uma resposta.";
 
-    console.log("🤖 Resposta:", textoResposta);
-    falarResposta(textoResposta);
+    const tipoConteudo = resp.headers.get("content-type") || "";
+
+    if (tipoConteudo.includes("application/json")) {
+      // veio do cache — resposta pronta, fala tudo de uma vez
+      const data = await resp.json();
+      console.log("🤖 Resposta (cache):", data.text);
+      falarFrase(data.text, true);
+    } else {
+      // streaming — vai chegando aos poucos, fala frase por frase
+      await falarStreamPorFrase(resp.body);
+    }
   } catch (err) {
     console.warn("Erro ao consultar o assistente:", err.message || err);
     setTimeout(reiniciarEscuta, 1000);
+  }
+}
+
+// lê o stream de texto do worker e vai falando cada frase completa
+// assim que ela termina (ponto, exclamação, interrogação ou quebra
+// de linha), sem esperar o restante da resposta
+async function falarStreamPorFrase(streamBody) {
+  streamDaRespostaTerminou = false;
+
+  const reader = streamBody.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let respostaCompleta = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    // extrai TODAS as frases completas que já chegaram no buffer
+    let match;
+    while ((match = buffer.match(/^(.*?[.!?\n])\s*/))) {
+      const frase = match[1];
+      respostaCompleta += frase + " ";
+      falarFrase(frase, false);
+      buffer = buffer.slice(match[0].length);
+    }
+  }
+
+  // fala o que sobrou no buffer (frase final sem pontuação, ou resposta curta)
+  if (buffer.trim()) {
+    respostaCompleta += buffer;
+    falarFrase(buffer, false);
+  }
+
+  console.log("🤖 Resposta completa:", respostaCompleta);
+  ultimaFalaTexto = respostaCompleta;
+  streamDaRespostaTerminou = true;
+
+  // se todas as frases já terminaram de tocar antes do streaming
+  // acabar (resposta curta), reinicia a escuta agora
+  if (utterancesPendentes <= 0) {
+    setTimeout(reiniciarEscuta, 1200);
   }
 }
 
@@ -1064,15 +1109,15 @@ if ("speechSynthesis" in window) {
   };
 }
 
-function falarResposta(texto) {
-  if (!("speechSynthesis" in window)) {
-    console.warn("Speech Synthesis não suportado.");
-    return;
-  }
+// controla quando é seguro voltar a escutar: só depois que TODAS
+// as frases da fila terminaram de tocar E o streaming já acabou
+let utterancesPendentes = 0;
+let streamDaRespostaTerminou = true;
 
+function limparTextoParaFala(texto) {
   // remove emojis, markdown e outros símbolos que o TTS tenta
   // "ler" em voz alta (ex.: ** seria lido como "asterisco asterisco")
-  const textoLimpo = texto
+  return texto
     .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}]/gu, "")
     .replace(/\*\*(.+?)\*\*/g, "$1") // **negrito** -> negrito
     .replace(/\*(.+?)\*/g, "$1") // *itálico* -> itálico
@@ -1082,24 +1127,38 @@ function falarResposta(texto) {
     .replace(/[*_#`~]/g, "") // qualquer símbolo de markdown restante
     .replace(/\s+/g, " ")
     .trim();
+}
+
+// fala um trecho (frase) — pode ser chamado várias vezes seguidas
+// pra mesma resposta (streaming); o navegador enfileira e toca uma
+// de cada vez, sem cortar a anterior
+function falarFrase(texto, ehRespostaUnicaCompleta) {
+  const textoLimpo = limparTextoParaFala(texto);
+  if (!textoLimpo || !("speechSynthesis" in window)) return;
+
+  if (ehRespostaUnicaCompleta) streamDaRespostaTerminou = true;
 
   const fala = new SpeechSynthesisUtterance(textoLimpo);
   fala.lang = CONFIG.idiomaVoz;
   fala.rate = 0.95;
   if (vozEscolhida) fala.voice = vozEscolhida;
 
-  // guarda o que está sendo falado, pra detectar eco quando a
-  // escuta reiniciar (ver ehEcoDaPropriaFala)
-  ultimaFalaTexto = textoLimpo;
-  ultimaFalaTimestamp = Date.now();
+  utterancesPendentes++;
 
   fala.onend = () => {
-    ultimaFalaTimestamp = Date.now(); // marca o fim real da fala
-    setTimeout(reiniciarEscuta, 1200);
+    utterancesPendentes--;
+    ultimaFalaTimestamp = Date.now();
+    if (utterancesPendentes <= 0 && streamDaRespostaTerminou) {
+      setTimeout(reiniciarEscuta, 1200);
+    }
   };
-  fala.onerror = () => setTimeout(reiniciarEscuta, 1200);
+  fala.onerror = () => {
+    utterancesPendentes = Math.max(0, utterancesPendentes - 1);
+    if (utterancesPendentes <= 0 && streamDaRespostaTerminou) {
+      setTimeout(reiniciarEscuta, 1200);
+    }
+  };
 
-  window.speechSynthesis.cancel();
   window.speechSynthesis.speak(fala);
 }
 
@@ -1364,36 +1423,3 @@ engine.runRenderLoop(() => {
 window.addEventListener("resize", () => {
   engine.resize();
 });
-
-// =========================================================
-// OTIMIZAÇÃO AUTOMÁTICA DE PERFORMANCE
-// =========================================================
-// Monitora o FPS e reduz qualidade SÓ nos dispositivos que
-// precisam (ordem: resolução de renderização -> sombras ->
-// pós-processamento -> texturas/partículas). Em aparelhos
-// rápidos (desktop, Quest 3) roda tudo no talo, sem mudar nada.
-// Se o FPS melhorar depois (ex.: fechou outra aba), ele tenta
-// restaurar a qualidade automaticamente.
-function iniciarOtimizacaoAutomatica() {
-  const fpsAlvo = 50; // abaixo disso, começa a degradar qualidade
-  const opcoes = new SceneOptimizerOptions(fpsAlvo, 1500); // reavalia a cada 1,5s
-
-  opcoes.addOptimization(new HardwareScalingOptimization(0, 1.5)); // renderiza em resolução menor
-  opcoes.addOptimization(new ShadowsOptimization(1));
-  opcoes.addOptimization(new PostProcessesOptimization(2)); // desliga SSAO/bloom se precisar
-  opcoes.addOptimization(new RenderTargetsOptimization(2));
-  opcoes.addOptimization(new LensFlaresOptimization(3));
-  opcoes.addOptimization(new ParticlesOptimization(3));
-  opcoes.addOptimization(new TextureOptimization(3, 512)); // reduz textura como último recurso
-
-  const otimizador = SceneOptimizer.OptimizeAsync(scene, opcoes, () => {
-    console.log("%c✅ Cena otimizada para o desempenho deste dispositivo.", "color:#4fd1c5");
-  });
-
-  window.otimizadorPerformance = otimizador; // debug: otimizadorPerformance.stop() pra desativar
-}
-
-// espera a máquina + robô terminarem de carregar antes de medir FPS
-// (durante o carregamento o FPS é naturalmente baixo, e isso
-// enviesaria a otimização pra baixo sem necessidade)
-setTimeout(iniciarOtimizacaoAutomatica, 4000);
